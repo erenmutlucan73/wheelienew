@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#0f172a" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <title>Tek Teker Eğim İzleyici</title>
+  <link rel="manifest" href="./manifest.json" />
+  <style>
+    :root { color-scheme: light; font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; background: linear-gradient(135deg, #f8fafc, #e2e8f0); color: #0f172a; display: flex; justify-content: center; align-items: center; padding: 16px; transition: background 0.3s ease; }
+    .app { width: min(100%, 460px); background: rgba(255,255,255,0.92); border-radius: 24px; box-shadow: 0 20px 45px rgba(15, 23, 42, 0.16); padding: 20px; backdrop-filter: blur(14px); }
+    h1 { margin: 0 0 6px; font-size: 1.35rem; }
+    p { margin: 0 0 16px; color: #475569; font-size: 0.95rem; }
+    .controls { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; }
+    button, .pill { border: 0; border-radius: 999px; padding: 10px 14px; font-size: 0.95rem; font-weight: 700; cursor: pointer; }
+    button { background: #0f172a; color: #fff; }
+    button.secondary { background: #e2e8f0; color: #0f172a; }
+    .card { border-radius: 20px; padding: 16px; background: #fff; margin-top: 12px; box-shadow: inset 0 1px 2px rgba(15,23,42,0.05); }
+    .gauge { min-height: 220px; border-radius: 20px; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center; transition: background 0.25s ease, color 0.25s ease; color: #0f172a; border: 1px solid rgba(15,23,42,0.08); }
+    .gauge .value { font-size: 3.2rem; font-weight: 800; line-height: 1; }
+    .gauge .label { margin-top: 8px; font-size: 0.95rem; opacity: 0.85; }
+    .status-row { display: flex; justify-content: space-between; margin-top: 12px; font-size: 0.95rem; gap: 8px; flex-wrap: wrap; }
+    .switch-row { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 6px; }
+    .switch { display: flex; align-items: center; gap: 8px; font-size: 0.92rem; color: #334155; }
+    .switch input { accent-color: #0f172a; }
+    .history { margin-top: 10px; max-height: 220px; overflow: auto; }
+    .hidden { display: none; }
+    .history-item { padding: 8px 0; border-bottom: 1px solid #e2e8f0; display: flex; justify-content: space-between; gap: 8px; font-size: 0.9rem; }
+    .muted { color: #64748b; font-size: 0.85rem; }
+    @media (max-width: 480px) { body { padding: 8px; } .app { padding: 16px; } .gauge { min-height: 190px; } }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <h1>Tek Teker Eğim İzleyici</h1>
+    <p>Yeni başlayanlar için eğimi rahatça takip edin. 30° civarında uyarı verilir.</p>
+    <div class="switch-row">
+      <label class="switch"><input type="checkbox" id="wakeToggle" checked /> Ekranı açık tut</label>
+      <label class="switch"><input type="checkbox" id="soundToggle" checked /> Uyarı sesi</label>
+    </div>
+    <div class="controls">
+      <button id="startBtn">İzin ver ve başlat</button>
+      <button id="toggleHistoryBtn" class="secondary">Geçmişi göster</button>
+      <button id="clearBtn" class="secondary">Temizle</button>
+    </div>
+    <section class="card">
+      <div class="gauge" id="gauge">
+        <div class="value" id="angleValue">0°</div>
+        <div class="label" id="angleLabel">Hazır</div>
+      </div>
+      <div class="status-row">
+        <span>Durum: <strong id="statusText">Bekleniyor</strong></span>
+        <span>Uyarı: <strong id="warningText">Hazır</strong></span>
+      </div>
+    </section>
+    <section class="card">
+      <div class="muted">Son ölçümler</div>
+      <div id="historyPanel" class="history hidden"></div>
+    </section>
+  </main>
+  <script>
+    const startBtn = document.getElementById("startBtn");
+    const toggleHistoryBtn = document.getElementById("toggleHistoryBtn");
+    const clearBtn = document.getElementById("clearBtn");
+    const wakeToggle = document.getElementById("wakeToggle");
+    const soundToggle = document.getElementById("soundToggle");
+    const gauge = document.getElementById("gauge");
+    const angleValue = document.getElementById("angleValue");
+    const angleLabel = document.getElementById("angleLabel");
+    const statusText = document.getElementById("statusText");
+    const warningText = document.getElementById("warningText");
+    const historyPanel = document.getElementById("historyPanel");
+    const storageKey = "tek-teker-egim-logs-v1";
+    let permissionGranted = false;
+    let wakeLockSentinel = null;
+    let latestAngle = 0;
+    let lastAlertAt = 0;
+    let lastLogAt = 0;
+    let logs = [];
+    function loadLogs() { try { const raw = localStorage.getItem(storageKey); logs = raw ? JSON.parse(raw) : []; } catch { logs = []; } renderLogs(); }
+    function saveLogs() { localStorage.setItem(storageKey, JSON.stringify(logs.slice(-20))); renderLogs(); }
+    function addLog(angle) { const now = new Date(); logs.push({ time: now.toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit", second: "2-digit" }), angle: Math.round(angle), state: classifyAngle(angle) }); if (logs.length > 20) logs.shift(); saveLogs(); }
+    function classifyAngle(angle) { if (angle < 10) return "Çok sakin"; if (angle < 20) return "Düşük"; if (angle < 30) return "Orta"; if (angle < 45) return "Yüksek"; return "Tehlikeli"; }
+    function renderLogs() { if (!logs.length) { historyPanel.innerHTML = '<div class="muted">Henüz ölçüm yok.</div>'; return; } historyPanel.innerHTML = logs.slice().reverse().map(function(item) { return '<div class="history-item"><span>' + item.time + '</span><span>' + item.angle + '° · ' + item.state + '</span></div>'; }).join(""); }
+    function interpolateColor(start, end, t) { const mix = function(a, b, p) { return Math.round(a + (b - a) * p); }; return start.map(function(value, index) { return mix(value, end[index], t); }); }
+    function colorForAngle(angle) { const clamped = Math.max(0, Math.min(angle, 90)); const ratio = clamped / 90; const white = [255, 255, 255]; const green = [150, 230, 160]; const yellow = [245, 215, 90]; const red = [255, 90, 90]; if (ratio < 0.35) return interpolateColor(white, green, ratio / 0.35); if (ratio < 0.70) return interpolateColor(green, yellow, (ratio - 0.35) / 0.35); return interpolateColor(yellow, red, (ratio - 0.70) / 0.30); }
+    function updateDisplay(angle) { const safeAngle = Math.max(0, Math.min(90, Math.round(angle))); const rgba = colorForAngle(safeAngle); gauge.style.background = "linear-gradient(135deg, rgba(" + rgba[0] + ", " + rgba[1] + ", " + rgba[2] + ", 0.95), rgba(255,255,255,0.8))"; gauge.style.color = safeAngle > 45 ? "#fff" : "#0f172a"; angleValue.textContent = safeAngle + "°"; angleLabel.textContent = safeAngle >= 30 ? "Yüksek eğim" : "İzleniyor"; statusText.textContent = classifyAngle(safeAngle); warningText.textContent = safeAngle >= 30 ? "Uyarı" : "Normal"; if (safeAngle >= 30 && soundToggle.checked && Date.now() - lastAlertAt > 1200) { beep(); if ("vibrate" in navigator) navigator.vibrate([120, 50, 120]); lastAlertAt = Date.now(); } if (Date.now() - lastLogAt > 1000) { addLog(safeAngle); lastLogAt = Date.now(); } }
+    function beep() { try { const Ctx = window.AudioContext || window.webkitAudioContext; if (!Ctx) return; const ctx = new Ctx(); const oscillator = ctx.createOscillator(); const gain = ctx.createGain(); oscillator.type = "square"; oscillator.frequency.setValueAtTime(880, ctx.currentTime); gain.gain.setValueAtTime(0.08, ctx.currentTime); gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.25); oscillator.connect(gain); gain.connect(ctx.destination); oscillator.start(); oscillator.stop(ctx.currentTime + 0.25); ctx.close(); } catch (err) {} }
+    async function requestWakeLock() { if (!("wakeLock" in navigator) || !wakeToggle.checked) return; try { wakeLockSentinel = await navigator.wakeLock.request("screen"); } catch (err) {} }
+    async function releaseWakeLock() { if (wakeLockSentinel) { try { await wakeLockSentinel.release(); } catch (err) {} wakeLockSentinel = null; } }
+    async function startSensors() { if (permissionGranted) return; if (typeof DeviceOrientationEvent !== "undefined" && typeof DeviceOrientationEvent.requestPermission === "function") { try { const result = await DeviceOrientationEvent.requestPermission(); if (result !== "granted") { angleLabel.textContent = "İzin reddedildi"; return; } } catch (err) { angleLabel.textContent = "İzin alınamadı"; return; } } if (typeof DeviceMotionEvent !== "undefined" && typeof DeviceMotionEvent.requestPermission === "function") { try { const result = await DeviceMotionEvent.requestPermission(); if (result !== "granted") { angleLabel.textContent = "İzin reddedildi"; return; } } catch (err) { angleLabel.textContent = "İzin alınamadı"; return; } } permissionGranted = true; startBtn.textContent = "Ölçüm çalışıyor"; startBtn.disabled = true; angleLabel.textContent = "Sensörler aktif"; window.addEventListener("deviceorientation", handleOrientation); window.addEventListener("devicemotion", handleMotion); await requestWakeLock(); updateDisplay(latestAngle); }
+    function handleOrientation(event) { if (event.beta !== null && Number.isFinite(event.beta)) latestAngle = Math.abs(event.beta); }
+    function handleMotion(event) { if (!event.accelerationIncludingGravity) return; const ax = event.accelerationIncludingGravity.x || 0; const ay = event.accelerationIncludingGravity.y || 0; const az = event.accelerationIncludingGravity.z || 0; const angle = Math.abs(Math.atan2(ay, Math.sqrt(ax * ax + az * az)) * 180 / Math.PI); if (Number.isFinite(angle)) latestAngle = Math.max(0, Math.min(90, angle)); }
+    startBtn.addEventListener("click", function() { startSensors(); });
+    toggleHistoryBtn.addEventListener("click", function() { historyPanel.classList.toggle("hidden"); toggleHistoryBtn.textContent = historyPanel.classList.contains("hidden") ? "Geçmişi göster" : "Geçmişi gizle"; });
+    clearBtn.addEventListener("click", function() { logs = []; localStorage.removeItem(storageKey); renderLogs(); });
+    wakeToggle.addEventListener("change", function() { if (wakeToggle.checked) requestWakeLock(); else releaseWakeLock(); });
+    document.addEventListener("visibilitychange", function() { if (document.visibilityState === "visible") requestWakeLock(); else releaseWakeLock(); });
+    setInterval(function() { if (permissionGranted) updateDisplay(latestAngle); }, 250);
+    if ("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js").catch(function() {});
+    loadLogs(); renderLogs();
+  </script>
+</body>
+</html>
