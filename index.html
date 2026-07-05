@@ -76,6 +76,7 @@
     .switch-row { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 6px; }
     .switch { display: flex; align-items: center; gap: 8px; font-size: 0.92rem; color: var(--muted); }
     .switch input { accent-color: var(--button); }
+    .support-hint { margin-bottom: 8px; color: var(--muted); font-size: 0.86rem; }
     .history { margin-top: 10px; max-height: 220px; overflow: auto; }
     .hidden { display: none; }
     .history-item { padding: 8px 0; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; gap: 8px; font-size: 0.9rem; }
@@ -98,6 +99,7 @@
       <button id="installBtn" class="secondary">Telefona kur</button>
       <button id="fullscreenBtn" class="secondary">Tam ekran</button>
     </div>
+    <div class="support-hint" id="supportHint">iPhone'da sensör izni verildiğinde özellikler çalışır.</div>
     <section class="card">
       <div class="gauge" id="gauge">
         <div class="value" id="angleValue">0°</div>
@@ -142,6 +144,7 @@
     const statusText = document.getElementById("statusText");
     const warningText = document.getElementById("warningText");
     const historyPanel = document.getElementById("historyPanel");
+    const supportHint = document.getElementById("supportHint");
     const maxAngleValue = document.getElementById("maxAngleValue");
     const timerValue = document.getElementById("timerValue");
     const speedValue = document.getElementById("speedValue");
@@ -267,6 +270,7 @@
         gain.connect(ctx.destination);
         oscillator.start();
         oscillator.stop(ctx.currentTime + 0.25);
+        ctx.resume().catch(function() {});
         ctx.close();
       } catch (err) {}
     }
@@ -370,11 +374,52 @@
       localStorage.setItem(themeKey, enabled ? "dark" : "light");
     }
 
+    function updateSupportHint(message) {
+      if (supportHint) supportHint.textContent = message;
+    }
+
+    function isIOS() {
+      return /iPhone|iPad|iPod/i.test(navigator.userAgent);
+    }
+
+    async function requestSensorPermissions() {
+      if (typeof DeviceOrientationEvent !== "undefined" && typeof DeviceOrientationEvent.requestPermission === "function") {
+        try {
+          const result = await DeviceOrientationEvent.requestPermission();
+          if (result !== "granted") {
+            updateSupportHint("iPhone'da sensör izni verilmeden ölçüm başlatılamaz.");
+            angleLabel.textContent = "İzin reddedildi";
+            return false;
+          }
+        } catch (err) {
+          updateSupportHint("Sensör izni alınamadı. Lütfen tekrar deneyin.");
+          angleLabel.textContent = "İzin alınamadı";
+          return false;
+        }
+      }
+      if (typeof DeviceMotionEvent !== "undefined" && typeof DeviceMotionEvent.requestPermission === "function") {
+        try {
+          const result = await DeviceMotionEvent.requestPermission();
+          if (result !== "granted") {
+            updateSupportHint("iPhone'da hareket izni verilmeden ölçüm başlatılamaz.");
+            angleLabel.textContent = "İzin reddedildi";
+            return false;
+          }
+        } catch (err) {
+          updateSupportHint("Hareket izni alınamadı. Lütfen tekrar deneyin.");
+          angleLabel.textContent = "İzin alınamadı";
+          return false;
+        }
+      }
+      return true;
+    }
+
     function startGps() {
       if (!navigator.geolocation) {
         speedValue.textContent = "GPS yok";
         return;
       }
+      if (gpsWatchId !== null) return;
       gpsWatchId = navigator.geolocation.watchPosition(function(position) {
         const speedKmh = position.coords.speed !== null ? (position.coords.speed * 3.6).toFixed(1) : "0.0";
         speedValue.textContent = speedKmh + " km/h";
@@ -392,36 +437,15 @@
 
     async function startSensors() {
       if (permissionGranted) return;
-      if (typeof DeviceOrientationEvent !== "undefined" && typeof DeviceOrientationEvent.requestPermission === "function") {
-        try {
-          const result = await DeviceOrientationEvent.requestPermission();
-          if (result !== "granted") {
-            angleLabel.textContent = "İzin reddedildi";
-            return;
-          }
-        } catch (err) {
-          angleLabel.textContent = "İzin alınamadı";
-          return;
-        }
-      }
-      if (typeof DeviceMotionEvent !== "undefined" && typeof DeviceMotionEvent.requestPermission === "function") {
-        try {
-          const result = await DeviceMotionEvent.requestPermission();
-          if (result !== "granted") {
-            angleLabel.textContent = "İzin reddedildi";
-            return;
-          }
-        } catch (err) {
-          angleLabel.textContent = "İzin alınamadı";
-          return;
-        }
-      }
+      const permissionOk = await requestSensorPermissions();
+      if (!permissionOk) return;
       permissionGranted = true;
       startBtn.textContent = "Ölçüm çalışıyor";
       startBtn.disabled = true;
       angleLabel.textContent = "Sensörler aktif";
-      window.addEventListener("deviceorientation", handleOrientation);
-      window.addEventListener("devicemotion", handleMotion);
+      updateSupportHint(isIOS() ? "iPhone'da sensörler aktif. İsterseniz tam ekran ve ana ekrana ekleme de kullanılabilir." : "Tüm özellikler aktif. İzinler verildiğinde ölçüm devam eder.");
+      window.addEventListener("deviceorientation", handleOrientation, { passive: true });
+      window.addEventListener("devicemotion", handleMotion, { passive: true });
       startTimer();
       startGps();
       await requestWakeLock();
@@ -442,10 +466,19 @@
     }
 
     function toggleFullscreen() {
-      if (!document.fullscreenElement) {
-        document.documentElement.requestFullscreen().catch(function() {});
+      const el = document.documentElement;
+      if (!document.fullscreenElement && !document.webkitFullscreenElement) {
+        if (el.requestFullscreen) {
+          el.requestFullscreen().catch(function() {});
+        } else if (el.webkitRequestFullscreen) {
+          el.webkitRequestFullscreen();
+        }
       } else {
-        document.exitFullscreen().catch(function() {});
+        if (document.exitFullscreen) {
+          document.exitFullscreen().catch(function() {});
+        } else if (document.webkitExitFullscreen) {
+          document.webkitExitFullscreen();
+        }
       }
     }
 
@@ -456,10 +489,17 @@
     });
 
     installBtn.addEventListener("click", async function() {
-      if (!installPrompt) return;
-      installPrompt.prompt();
-      await installPrompt.userChoice;
-      installPrompt = null;
+      if (installPrompt) {
+        installPrompt.prompt();
+        await installPrompt.userChoice;
+        installPrompt = null;
+        return;
+      }
+      if (isIOS()) {
+        updateSupportHint("iPhone'da: Paylaş butonuna dokunup 'Ana Ekrana Ekle' seçin.");
+      } else {
+        updateSupportHint("Bu tarayıcıda kurulum butonu desteklenmiyor. Tarayıcıdaki kurulum seçeneğini kullanın.");
+      }
     });
 
     startBtn.addEventListener("click", function() { startSensors(); });
